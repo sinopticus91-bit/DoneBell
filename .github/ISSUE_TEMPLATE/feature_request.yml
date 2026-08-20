@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest an improvement for DoneBell
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: What are you trying to do?
+      description: Describe the workflow where DoneBell could help.
+      placeholder: I usually wait for ...
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Suggested behavior
+      description: What would you like DoneBell to do?
+      placeholder: It would be useful if DoneBell ...
+    validations:
+      required: true
