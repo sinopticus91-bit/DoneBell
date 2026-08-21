@@ -1,4 +1,4 @@
-# DoneBell Privacy Notes — Public Beta v0.5.0
+# DoneBell Privacy Notes — Public Beta v0.5.6
 
 DoneBell is designed to work locally and to minimize browser permissions.
 
@@ -34,6 +34,10 @@ No diagnostic report is sent automatically. Sharing happens only after an explic
 ## Custom audio
 
 Custom alert audio selected by the user is stored locally in browser extension storage and is used only for DoneBell alert playback.
+
+## Support link
+
+The optional **Support** button opens the configured external Boosty page only after an explicit user click. DoneBell does not process payment data and does not receive payment details inside the extension.
 
 ## Future report API
 
