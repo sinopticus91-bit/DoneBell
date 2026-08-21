@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.5.6 — Public Beta focus semantics
+
+### Completion acknowledgement
+- Explicitly closing/stopping a completion alert now clears the matching system notification as well as the in-page surface and flashing `DONE` title.
+- The completion surface is a single high, full-area clickable control with small status/site information above a large `✓ Close` action.
+- The in-page completion surface is a singleton and updates in place, preventing duplicate controls during fast audio/focus state changes.
+
+### Tab focus behavior
+- **Automatically switch to finished tab** is independent from acknowledgement.
+- **Stop the alert when I open the finished tab** applies to manual/user focus.
+- New child setting **Also stop if DoneBell switches to it automatically**, off by default.
+- The child setting is also available in per-site Custom overrides.
+- Auto-focused tabs no longer accidentally silence their own alert unless the child setting is enabled.
+- When DoneBell auto-focuses a completed tab, a redundant system notification is suppressed because the in-page completion control is already visible.
+
+### Documentation
+- Added README variants for all 18 current UI languages.
+- Updated Public Beta privacy notes and support documentation.
+
 ## v0.5.1 — Support link
 
 - Connected the public Boosty donation page.
@@ -14,9 +33,8 @@ First public-beta source release.
 ### Feedback and support shell
 - Local bug-report preparation and GitHub feedback integration.
 - Feature-request entry point.
-- Reserved support/donation destination (disabled until configured).
-- Explicit Stop Sound now also acknowledges completion and clears the flashing DONE state.
-- Larger in-page Stop Sound target.
+- Explicit Stop Sound acknowledges completion and clears the flashing DONE state.
+- In-page completion acknowledgement control.
 
 ### Watchers and compatibility
 - AI completion watcher.
