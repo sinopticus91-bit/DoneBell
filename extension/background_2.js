@@ -96,6 +96,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'completion-acknowledged') {
     (async () => {
+      // Any explicit acknowledgement (including the in-page Close button)
+      // also dismisses every DoneBell system notification for this tab.
+      await clearDoneNotificationsForTab(tab.id);
       try {
         const status = await chrome.tabs.sendMessage(tab.id, { type: 'get-watch-status' });
         await setBadge(tab.id, status?.watching && status?.mode === 'ai' ? 'armed' : 'off');
@@ -112,21 +115,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       await setBadge(tab.id, 'done');
 
-      if (settings.focusTab && !message.wasVisible) await focusTab(tab.id, tab.windowId);
-
-      const becomesActive = Boolean(message.wasVisible || settings.focusTab);
-      const soundShouldPlay = Boolean(settings.soundEnabled && !(settings.stopOnTabFocus && becomesActive));
-      if (settings.soundEnabled && !soundShouldPlay) {
-        await appendLog('background', 'info', 'Completion sound suppressed because finished tab is active', { tabId: tab.id, stopOnTabFocus: true, wasVisible: Boolean(message.wasVisible), focusTab: Boolean(settings.focusTab) });
+      const autoFocusedNow = Boolean(settings.focusTab && !message.wasVisible);
+      if (autoFocusedNow) {
+        markDoneBellAutoFocus(tab.id);
+        await focusTab(tab.id, tab.windowId);
       }
 
+      // Parent setting = acknowledge when the user is already looking at / manually opens
+      // the completed tab. Auto-focus is a separate opt-in so the two behaviors do not
+      // silently cancel each other.
+      const shouldAcknowledgeImmediately = Boolean(
+        settings.stopOnTabFocus && (
+          message.wasVisible || (autoFocusedNow && settings.stopOnAutoFocus)
+        )
+      );
+      if (shouldAcknowledgeImmediately) {
+        await appendLog('background', 'info', 'Completion acknowledged on active finished tab', {
+          tabId: tab.id, wasVisible: Boolean(message.wasVisible), autoFocusedNow, stopOnAutoFocus: Boolean(settings.stopOnAutoFocus)
+        });
+        await acknowledgeTab(tab.id);
+        await clearDoneNotificationsForTab(tab.id);
+        try {
+          const status = await chrome.tabs.sendMessage(tab.id, { type: 'get-watch-status' });
+          await setBadge(tab.id, status?.watching && status?.mode === 'ai' ? 'armed' : 'off');
+        } catch { await setBadge(tab.id, 'off'); }
+        return;
+      }
+
+      const soundShouldPlay = Boolean(settings.soundEnabled);
+
       await sendToTab(tab.id, {
-        type: 'show-completion-ui', settings, soundPlaying: soundShouldPlay
+        type: 'show-completion-ui', settings, soundPlaying: soundShouldPlay, autoFocusedByDoneBell: autoFocusedNow
       }, 'Could not show in-page completion UI');
 
       const actions = [];
       if (soundShouldPlay) actions.push(playSound('completion', tab.id, settings));
-      if (settings.showNotification) actions.push(createDoneNotification(tab, message.site, message.title));
+      // If DoneBell itself has just brought the completed tab to the front,
+      // the in-page completion control is already visible. Avoid showing a
+      // second system popup on top of it.
+      if (settings.showNotification && !autoFocusedNow) {
+        actions.push(createDoneNotification(tab, message.site, message.title));
+      } else if (settings.showNotification && autoFocusedNow) {
+        await appendLog('background', 'info', 'System notification suppressed because DoneBell auto-focused the completed tab', { tabId: tab.id });
+      }
       const results = await Promise.allSettled(actions);
       for (const result of results) {
         if (result.status === 'rejected') {
@@ -137,4 +168,3 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })().catch((error) => appendLog('background', 'error', 'Completion handler crashed', { error: String(error) }));
   }
 });
-
