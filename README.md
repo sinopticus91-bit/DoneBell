@@ -1,6 +1,6 @@
 # 🔔 DoneBell
 
-**Public Beta · v0.5.0 · Chrome / Edge**
+**Public Beta · v0.5.1 · Chrome / Edge**
 
 DoneBell tells you when a long-running task in a browser tab is finished, so you do not have to keep checking the tab.
 
