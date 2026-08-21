@@ -1,4 +1,4 @@
-importScripts('i18n_bootstrap.js', 'i18n_data/en.js', 'i18n_data/ru.js', 'i18n_data/es.js', 'i18n_data/de.js', 'i18n_data/fr.js', 'i18n_data/pt_BR.js', 'i18n_data/zh_CN.js', 'i18n_data/zh_TW.js', 'i18n_data/ja.js', 'i18n_data/ko.js', 'i18n_data/ar.js', 'i18n_data/hi.js', 'i18n_data/id.js', 'i18n_data/tr.js', 'i18n_data/it.js', 'i18n_data/pl.js', 'i18n_data/uk.js', 'i18n_data/vi.js', 'i18n.js', 'sites.js');
+importScripts('i18n_bootstrap.js','i18n_data/en.js','i18n_data/ru.js','i18n_data/es.js','i18n_data/de.js','i18n_data/fr.js','i18n_data/pt_BR.js','i18n_data/zh_CN.js','i18n_data/zh_TW.js','i18n_data/ja.js','i18n_data/ko.js','i18n_data/ar.js','i18n_data/hi.js','i18n_data/id.js','i18n_data/tr.js','i18n_data/it.js','i18n_data/pl.js','i18n_data/uk.js','i18n_data/vi.js','i18n.js','i18n_patch_v056.js','sites.js');
 const OFFSCREEN_DOCUMENT = 'offscreen.html';
 const LOG_KEY = 'debugLogs';
 const WATCH_REGISTRY_KEY = 'watchRegistry';
@@ -13,10 +13,15 @@ const DEFAULT_SETTINGS = {
   repeatSound: false,
   focusTab: false,
   stopOnTabFocus: false,
+  stopOnAutoFocus: false,
   showNotification: true,
   flashTitle: true,
   inPagePanel: true
 };
+
+const autoFocusMarks = new Map();
+function markDoneBellAutoFocus(tabId){autoFocusMarks.set(tabId,Date.now());setTimeout(()=>{if(Date.now()-(autoFocusMarks.get(tabId)||0)>=1800)autoFocusMarks.delete(tabId);},1900);}
+function isRecentDoneBellAutoFocus(tabId){const ts=autoFocusMarks.get(tabId)||0;return Date.now()-ts<1800;}
 
 const I18N = globalThis.DoneBellI18n;
 const SITE_API = globalThis.DoneBellSites;
@@ -226,7 +231,7 @@ async function ensureContentScript(tabId) {
     if (ping?.ok && ping.version === chrome.runtime.getManifest().version) return true;
   } catch {}
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['i18n_bootstrap.js', 'i18n_data/en.js', 'i18n_data/ru.js', 'i18n_data/es.js', 'i18n_data/de.js', 'i18n_data/fr.js', 'i18n_data/pt_BR.js', 'i18n_data/zh_CN.js', 'i18n_data/zh_TW.js', 'i18n_data/ja.js', 'i18n_data/ko.js', 'i18n_data/ar.js', 'i18n_data/hi.js', 'i18n_data/id.js', 'i18n_data/tr.js', 'i18n_data/it.js', 'i18n_data/pl.js', 'i18n_data/uk.js', 'i18n_data/vi.js', 'i18n.js', 'sites.js', 'content.js'] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['i18n_bootstrap.js','i18n_data/en.js','i18n_data/ru.js','i18n_data/es.js','i18n_data/de.js','i18n_data/fr.js','i18n_data/pt_BR.js','i18n_data/zh_CN.js','i18n_data/zh_TW.js','i18n_data/ja.js','i18n_data/ko.js','i18n_data/ar.js','i18n_data/hi.js','i18n_data/id.js','i18n_data/tr.js','i18n_data/it.js','i18n_data/pl.js','i18n_data/uk.js','i18n_data/vi.js','i18n.js','i18n_patch_v056.js','sites.js','content.js'] });
     await appendLog('background', 'info', 'Content script injected via activeTab', { tabId });
     return true;
   } catch (error) {
@@ -257,7 +262,7 @@ async function syncAutoWatchSite(siteId,{injectOpenTabs=false}={}) {
     await appendLog('background','info','Auto-watch disabled or permission absent',{siteId,autoWatch:cfg.autoWatch,granted}); return{ok:true,registered:false,granted};
   }
   const id=autoScriptId(siteId);
-  try { await chrome.scripting.registerContentScripts([{id,matches:site.patterns,js:['i18n_bootstrap.js','i18n_data/en.js','i18n_data/ru.js','i18n_data/es.js','i18n_data/de.js','i18n_data/fr.js','i18n_data/pt_BR.js','i18n_data/zh_CN.js','i18n_data/zh_TW.js','i18n_data/ja.js','i18n_data/ko.js','i18n_data/ar.js','i18n_data/hi.js','i18n_data/id.js','i18n_data/tr.js','i18n_data/it.js','i18n_data/pl.js','i18n_data/uk.js','i18n_data/vi.js','i18n.js','sites.js','content.js'],runAt:'document_idle',persistAcrossSessions:true}]); await appendLog('background','info','Auto-watch content script registered',{siteId,patterns:site.patterns}); if(injectOpenTabs)await injectAutoWatchIntoOpenTabs(site); return{ok:true,registered:true,granted}; }
+  try { await chrome.scripting.registerContentScripts([{id,matches:site.patterns,js:['i18n_bootstrap.js','i18n_data/en.js','i18n_data/ru.js','i18n_data/es.js','i18n_data/de.js','i18n_data/fr.js','i18n_data/pt_BR.js','i18n_data/zh_CN.js','i18n_data/zh_TW.js','i18n_data/ja.js','i18n_data/ko.js','i18n_data/ar.js','i18n_data/hi.js','i18n_data/id.js','i18n_data/tr.js','i18n_data/it.js','i18n_data/pl.js','i18n_data/uk.js','i18n_data/vi.js','i18n.js','i18n_patch_v056.js','sites.js','content.js'],runAt:'document_idle',persistAcrossSessions:true}]); await appendLog('background','info','Auto-watch content script registered',{siteId,patterns:site.patterns}); if(injectOpenTabs)await injectAutoWatchIntoOpenTabs(site); return{ok:true,registered:true,granted}; }
   catch(error){await appendLog('background','error','Auto-watch registration failed',{siteId,error:String(error)});return{ok:false,error:String(error),registered:false,granted};}
 }
 async function syncAllAutoWatch(){for(const site of SITE_API.SITE_CATALOG)await syncAutoWatchSite(site.id);}
@@ -281,4 +286,3 @@ async function acknowledgeTab(tabId) {
   const ok = await sendToTab(tabId, { type: 'dismiss-completion' });
   if (!ok) await setBadge(tabId, 'off');
 }
-
