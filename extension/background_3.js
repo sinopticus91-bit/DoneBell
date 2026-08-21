@@ -73,8 +73,7 @@ async function clearDoneNotificationsForTab(tabId) {
   } catch {}
 }
 
-async function maybeStopCompletionSoundForFocusedTab(tabId, reason = 'finished-tab-activated') {
-  if (!audioPlaying || activeAudioReason !== 'completion' || activeAudioOwnerTabId !== tabId) return false;
+async function maybeAcknowledgeCompletionForFocusedTab(tabId, reason = 'finished-tab-activated', autoTriggered = false) {
   try {
     const tab = await chrome.tabs.get(tabId);
     if (!tab?.active || !Number.isInteger(tab.windowId)) return false;
@@ -83,26 +82,34 @@ async function maybeStopCompletionSoundForFocusedTab(tabId, reason = 'finished-t
     const site = SITE_API.siteForUrl(tab.url || '');
     const settings = await getEffectiveSettings(site?.id || null);
     if (!settings.stopOnTabFocus) return false;
-    const stopped = await stopSound(reason);
+    if (autoTriggered && !settings.stopOnAutoFocus) {
+      await appendLog('background', 'info', 'Auto-focus did not acknowledge completion because stopOnAutoFocus is off', { tabId, reason });
+      return false;
+    }
+    let status = null;
+    try { status = await chrome.tabs.sendMessage(tabId, { type: 'get-watch-status' }); } catch {}
+    const ownsCompletionAudio = Boolean(audioPlaying && activeAudioReason === 'completion' && activeAudioOwnerTabId === tabId);
+    if (!ownsCompletionAudio && !status?.completionActive) return false;
+    const stopped = ownsCompletionAudio ? await stopSound(reason) : false;
     await acknowledgeTab(tabId);
     await clearDoneNotificationsForTab(tabId);
-    await appendLog('background', 'info', 'Stopped completion sound because finished tab became active', { tabId, site: site?.name || null, reason, stopped });
-    return stopped;
+    await appendLog('background', 'info', 'Acknowledged completion because finished tab became active', { tabId, site: site?.name || null, reason, autoTriggered, stopped });
+    return true;
   } catch (error) {
-    await appendLog('background', 'info', 'Could not evaluate stop-on-active-tab', { tabId, reason, error: String(error) });
+    await appendLog('background', 'info', 'Could not evaluate stop-on-active-tab', { tabId, reason, autoTriggered, error: String(error) });
     return false;
   }
 }
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  maybeStopCompletionSoundForFocusedTab(tabId, 'finished-tab-activated').catch(() => {});
+  maybeAcknowledgeCompletionForFocusedTab(tabId, 'finished-tab-activated', isRecentDoneBellAutoFocus(tabId)).catch(() => {});
 });
 
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
-  if (windowId === chrome.windows.WINDOW_ID_NONE || !audioPlaying || activeAudioReason !== 'completion') return;
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
   try {
     const tabs = await chrome.tabs.query({ active: true, windowId });
-    if (tabs[0]?.id === activeAudioOwnerTabId) await maybeStopCompletionSoundForFocusedTab(tabs[0].id, 'finished-window-focused');
+    if (tabs[0]?.id != null) await maybeAcknowledgeCompletionForFocusedTab(tabs[0].id, 'finished-window-focused', isRecentDoneBellAutoFocus(tabs[0].id));
   } catch {}
 });
 
