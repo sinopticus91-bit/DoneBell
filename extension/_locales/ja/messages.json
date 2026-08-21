@@ -1,0 +1,8 @@
+{
+  "appName": {
+    "message": "DoneBell — Task Finish Alerts"
+  },
+  "appDescription": {
+    "message": "ブラウザーの長いタスクが終わったら音・通知・タブ切替で知らせます。"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "appName": {
+    "message": "DoneBell — Task Finish Alerts"
+  },
+  "appDescription": {
+    "message": "瀏覽器長時間工作完成時播放聲音、顯示通知並切換到對應分頁。"
+  }
+}

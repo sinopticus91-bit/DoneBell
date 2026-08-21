@@ -1,0 +1,8 @@
+{
+  "appName": {
+    "message": "DoneBell — Task Finish Alerts"
+  },
+  "appDescription": {
+    "message": "Recibe sonido, notificación y foco de pestaña cuando termina una tarea larga."
+  }
+}

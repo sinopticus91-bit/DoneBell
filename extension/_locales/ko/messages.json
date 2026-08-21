@@ -1,0 +1,8 @@
+{
+  "appName": {
+    "message": "DoneBell — Task Finish Alerts"
+  },
+  "appDescription": {
+    "message": "브라우저의 긴 작업이 끝나면 소리, 알림, 탭 전환으로 알려줍니다."
+  }
+}

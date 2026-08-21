@@ -1,0 +1,8 @@
+{
+  "appName": {
+    "message": "DoneBell — Task Finish Alerts"
+  },
+  "appDescription": {
+    "message": "Звук, уведомление и фокус вкладки, когда долгая задача в браузере завершена."
+  }
+}

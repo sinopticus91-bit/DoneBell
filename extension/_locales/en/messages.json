@@ -1,0 +1,8 @@
+{
+  "appName": {
+    "message": "DoneBell — Task Finish Alerts"
+  },
+  "appDescription": {
+    "message": "Get a sound, notification and tab focus when a long browser task finishes."
+  }
+}
