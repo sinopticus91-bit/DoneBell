@@ -11,11 +11,11 @@
     { id:'mistral', name:'Le Chat', status:'generic', detector:'generic', hosts:['chat.mistral.ai'], patterns:['https://chat.mistral.ai/*'] },
     { id:'you', name:'You.com', status:'generic', detector:'generic', hosts:['you.com','www.you.com'], patterns:['https://you.com/*','https://www.you.com/*'] }
   ];
-  const ALERT_FIELDS=['soundEnabled','soundVolume','repeatSound','focusTab','stopOnTabFocus','showNotification','flashTitle','inPagePanel'];
+  const ALERT_FIELDS=['soundEnabled','soundVolume','repeatSound','focusTab','stopOnTabFocus','stopOnAutoFocus','showNotification','flashTitle','inPagePanel'];
   const PROFILES={
-    quiet:{soundEnabled:false,repeatSound:false,focusTab:false,stopOnTabFocus:false,showNotification:true,flashTitle:true,inPagePanel:false},
-    normal:{soundEnabled:true,repeatSound:false,focusTab:false,stopOnTabFocus:false,showNotification:true,flashTitle:true,inPagePanel:true},
-    urgent:{soundEnabled:true,repeatSound:true,focusTab:true,stopOnTabFocus:false,showNotification:true,flashTitle:true,inPagePanel:true}
+    quiet:{soundEnabled:false,repeatSound:false,focusTab:false,stopOnTabFocus:false,stopOnAutoFocus:false,showNotification:true,flashTitle:true,inPagePanel:false},
+    normal:{soundEnabled:true,repeatSound:false,focusTab:false,stopOnTabFocus:false,stopOnAutoFocus:false,showNotification:true,flashTitle:true,inPagePanel:true},
+    urgent:{soundEnabled:true,repeatSound:true,focusTab:true,stopOnTabFocus:false,stopOnAutoFocus:false,showNotification:true,flashTitle:true,inPagePanel:true}
   };
   const normalizeHost=(h)=>String(h||'').toLowerCase().replace(/^www\./,'');
   function siteForHost(host){const raw=String(host||'').toLowerCase(),norm=normalizeHost(raw);for(const s of SITE_CATALOG){if(s.hosts.some(h=>raw===String(h).toLowerCase()||norm===normalizeHost(h)))return s;}return null;}
