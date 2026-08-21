@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.1 — Support link
+
+- Connected the public Boosty donation page.
+- Moved the opt-in support control into the header as a small blue button between the DoneBell brand and Public Beta label.
+- Removed the duplicate support button from the bottom of the popup.
+- Clicking Support only opens Boosty in a new tab; DoneBell does not process payments itself.
+
 ## v0.5.0 — Public Beta
 
 First public-beta source release.
