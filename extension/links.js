@@ -1,6 +1,5 @@
 (() => {
-  // Public release destinations.
-  // DoneBell opens these only after an explicit user click.
+  // Public release destinations. DoneBell opens these only after an explicit user click.
   globalThis.DoneBellLinks = Object.freeze({
     supportUrl: "https://boosty.to/sinopticus/donate",
     githubRepoUrl: "https://github.com/sinopticus91-bit/DoneBell",
