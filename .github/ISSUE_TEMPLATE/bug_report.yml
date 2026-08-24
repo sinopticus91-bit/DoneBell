@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for testing DoneBell Public Beta. Please do not include private AI conversation text.
+        Thanks for testing DoneBell Public Beta. Please do not include private AI conversation text. If possible, attach or paste the DoneBell diagnostics report — it is the fastest way to identify site-specific detector failures.
   - type: textarea
     id: happened
     attributes:
@@ -20,8 +20,16 @@ body:
     id: site
     attributes:
       label: Site
-      description: Example: ChatGPT, Claude, Gemini, DeepSeek, or another website.
-      placeholder: ChatGPT
+      description: Example: ChatGPT, Claude, Gemini, DeepSeek, Grok, Perplexity, Microsoft Copilot, Poe, Le Chat/Mistral, or another website.
+      placeholder: Gemini
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: DoneBell version
+      description: Shown in the DoneBell popup header and included in Diagnostics.
+      placeholder: 0.5.18
     validations:
       required: false
   - type: dropdown
@@ -44,14 +52,15 @@ body:
         1. Open ...
         2. Enable ...
         3. Start ...
-        4. Observe ...
+        4. Switch tabs ...
+        5. Observe ...
     validations:
       required: false
   - type: textarea
     id: diagnostics
     attributes:
       label: DoneBell diagnostics
-      description: In DoneBell, click “Report a problem” or copy Diagnostics and paste the report here. It is designed not to include AI prompts or answers.
+      description: In DoneBell, use Diagnostics / Report a problem and paste the generated report here. Reports are prepared locally and are designed not to include AI prompts or answers.
       render: text
     validations:
       required: false
