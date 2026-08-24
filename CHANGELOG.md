@@ -1,16 +1,38 @@
 # Changelog
 
+## v0.5.18 — Gemini background completion and Copilot compatibility
+
+### Gemini
+- Added background-tab completion detection based on Gemini's dedicated `BardFrontendService/StreamGenerate` request lifecycle.
+- DoneBell can now alert while Gemini is hidden even when Gemini delays its DOM/UI completion state until the tab is foregrounded.
+- Network bodies, headers, cookies, prompts and answers are not read.
+- Removed noisy diagnostic experiments used while isolating the Gemini background-tab behavior.
+
+### Microsoft Copilot
+- Added current Copilot entry points including `www.copilot.com`, `m365.cloud.microsoft` and `copilot.cloud.microsoft`.
+- Added localized Stop-control matching including Russian `Прекратить создание`.
+- Confirmed working completion detection on `www.copilot.com` and `m365.cloud.microsoft` during manual testing.
+
+### Compatibility validation
+- Manually rechecked ChatGPT, Claude, Gemini, DeepSeek, Grok, Perplexity, Microsoft Copilot, Poe and Le Chat/Mistral.
+- Generic integrations remain beta compatibility because third-party AI sites can change their interfaces without notice.
+
+### Privacy / permissions
+- Added the `webRequest` permission for Gemini background-completion detection.
+- Manual watching still relies on temporary `activeTab` access.
+- Auto-Watch remains opt-in and site-scoped through `optional_host_permissions`.
+
 ## v0.5.6 — Public Beta focus semantics
 
 ### Completion acknowledgement
-- Explicitly closing/stopping a completion alert now clears the matching system notification as well as the in-page surface and flashing `DONE` title.
+- Explicitly closing/stopping a completion alert clears the matching system notification as well as the in-page surface and flashing `DONE` title.
 - The completion surface is a single high, full-area clickable control with small status/site information above a large `✓ Close` action.
 - The in-page completion surface is a singleton and updates in place, preventing duplicate controls during fast audio/focus state changes.
 
 ### Tab focus behavior
 - **Automatically switch to finished tab** is independent from acknowledgement.
 - **Stop the alert when I open the finished tab** applies to manual/user focus.
-- New child setting **Also stop if DoneBell switches to it automatically**, off by default.
+- Added child setting **Also stop if DoneBell switches to it automatically**, off by default.
 - The child setting is also available in per-site Custom overrides.
 - Auto-focused tabs no longer accidentally silence their own alert unless the child setting is enabled.
 - When DoneBell auto-focuses a completed tab, a redundant system notification is suppressed because the in-page completion control is already visible.
