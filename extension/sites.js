@@ -6,7 +6,7 @@
     { id:'deepseek', name:'DeepSeek', status:'dedicated', detector:'dedicated', hosts:['chat.deepseek.com'], patterns:['https://chat.deepseek.com/*'] },
     { id:'grok', name:'Grok', status:'generic', detector:'generic', hosts:['grok.com','www.grok.com'], patterns:['https://grok.com/*','https://www.grok.com/*'] },
     { id:'perplexity', name:'Perplexity', status:'generic', detector:'generic', hosts:['perplexity.ai','www.perplexity.ai'], patterns:['https://perplexity.ai/*','https://www.perplexity.ai/*'] },
-    { id:'copilot', name:'Microsoft Copilot', status:'generic', detector:'generic', hosts:['copilot.microsoft.com'], patterns:['https://copilot.microsoft.com/*'] },
+    { id:'copilot', name:'Microsoft Copilot', status:'generic', detector:'generic', hosts:['copilot.microsoft.com','copilot.com','www.copilot.com','m365.cloud.microsoft','copilot.cloud.microsoft'], patterns:['https://copilot.microsoft.com/*','https://copilot.com/*','https://www.copilot.com/*','https://m365.cloud.microsoft/*','https://copilot.cloud.microsoft/*'] },
     { id:'poe', name:'Poe', status:'generic', detector:'generic', hosts:['poe.com','www.poe.com'], patterns:['https://poe.com/*','https://www.poe.com/*'] },
     { id:'mistral', name:'Le Chat', status:'generic', detector:'generic', hosts:['chat.mistral.ai'], patterns:['https://chat.mistral.ai/*'] },
     { id:'you', name:'You.com', status:'generic', detector:'generic', hosts:['you.com','www.you.com'], patterns:['https://you.com/*','https://www.you.com/*'] }
