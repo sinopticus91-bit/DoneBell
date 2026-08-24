@@ -1,6 +1,11 @@
 (() => {
-  if (window.__DONEBELL_V040_LOADED__) return;
-  window.__DONEBELL_V040_LOADED__ = true;
+  const DONEBELL_INSTANCE_VERSION = chrome.runtime.getManifest().version;
+  const DONEBELL_INSTANCE_KEY = '__DONEBELL_ACTIVE_INSTANCE__';
+  const previousInstance = window[DONEBELL_INSTANCE_KEY];
+  if (previousInstance?.version === DONEBELL_INSTANCE_VERSION) return;
+  const instanceToken = `${DONEBELL_INSTANCE_VERSION}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  window[DONEBELL_INSTANCE_KEY] = { version: DONEBELL_INSTANCE_VERSION, token: instanceToken };
+  const isCurrentInstance = () => window[DONEBELL_INSTANCE_KEY]?.token === instanceToken;
 
   const I18N = globalThis.DoneBellI18n;
   const SITE_API = globalThis.DoneBellSites;
@@ -38,7 +43,7 @@
     '[role="button"][class*="stop" i]'
   ];
 
-  const STOP_TEXT_RE = /(?:\bstop\b|stop\s+(?:generat|respond|stream)|cancel\s+(?:generat|response)|interrupt(?:\s+response)?|terminate(?:\s+response)?|останов|прерват|зупин|перерват|detener|parar\s+(?:generaci[oó]n|respuesta)|cancelar\s+(?:generaci[oó]n|respuesta)|stoppen|antwort\s+stoppen|generierung\s+stoppen|arr[êe]ter|stopper|parar|interromper|interrompi|ferma|interrompi|annulla|zatrzymaj|przerwij|anuluj|durdur|iptal|hentikan|batalkan|dừng|hủy|إيقاف|توقف|إلغاء|रोक|बंद|停止|生成を停止|중지)/i;
+  const STOP_TEXT_RE = /(?:\bstop\b|stop\s+(?:generat|respond|stream)|cancel\s+(?:generat|response)|interrupt(?:\s+response)?|terminate(?:\s+response)?|останов|прерват|прекрат|зупин|перерват|detener|parar\s+(?:generaci[oó]n|respuesta)|cancelar\s+(?:generaci[oó]n|respuesta)|stoppen|antwort\s+stoppen|generierung\s+stoppen|arr[êe]ter|stopper|parar|interromper|interrompi|ferma|interrompi|annulla|zatrzymaj|przerwij|anuluj|durdur|iptal|hentikan|batalkan|dừng|hủy|إيقاف|توقف|إلغاء|रोक|बंद|停止|生成を停止|중지)/i;
 
   const state = {
     watching: false,
@@ -62,6 +67,15 @@
     lastLocation: location.href,
     deepseekSnapshotSignature: null,
     deepseekIdleFingerprint: null,
+    copilotPollTimer: null,
+    copilotSnapshotSignature: null,
+    copilotSnapshotCount: 0,
+    geminiBridgeReady: false,
+    geminiInflight: new Map(),
+    geminiGenerationSerial: 0,
+    geminiGenerationStartedAt: 0,
+    geminiNetworkFinishTimer: null,
+    geminiAwaitingDomIdle: false,
     autoStarted: false
   };
 
@@ -232,7 +246,140 @@
     return null;
   }
 
+  function copilotDocumentRoots() {
+    if (state.site?.id !== 'copilot') return [document];
+    const roots = [];
+    const seenRoots = new Set();
+    const seenDocs = new Set();
+    const visitRoot = (root) => {
+      if (!root || seenRoots.has(root)) return;
+      seenRoots.add(root);
+      roots.push(root);
+      let nodes = [];
+      try { nodes = [...root.querySelectorAll('*')]; } catch {}
+      for (const el of nodes) {
+        try { if (el.shadowRoot) visitRoot(el.shadowRoot); } catch {}
+      }
+    };
+    const visitDoc = (doc) => {
+      if (!doc || seenDocs.has(doc)) return;
+      seenDocs.add(doc);
+      visitRoot(doc);
+      let frames = [];
+      try { frames = [...doc.querySelectorAll('iframe,frame')]; } catch {}
+      for (const frame of frames) {
+        try { if (frame.contentDocument) visitDoc(frame.contentDocument); } catch {}
+      }
+    };
+    visitDoc(document);
+    return roots;
+  }
+
+  function copilotElementVisible(el) {
+    if (!el || el.nodeType !== 1) return false;
+    try {
+      const win = el.ownerDocument?.defaultView || window;
+      const style = win.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    } catch { return false; }
+  }
+
+  function findCopilotStopControl() {
+    if (state.site?.id !== 'copilot') return null;
+    const exactSelectors = [
+      'button[aria-label="Stop generating"]',
+      'button[aria-label*="stop generating" i]',
+      '[role="button"][aria-label*="stop generating" i]',
+      'button[aria-label*="stop responding" i]',
+      '[role="button"][aria-label*="stop responding" i]',
+      'button[data-testid="stop-button"]',
+      '[data-testid*="stop" i]',
+      '[data-test-id*="stop" i]',
+      '[data-test*="stop" i]',
+      'button[title*="stop" i]',
+      '[role="button"][title*="stop" i]',
+      'button[aria-label*="Прекрат"]',
+      '[role="button"][aria-label*="Прекрат"]'
+    ];
+    const roots = copilotDocumentRoots();
+    for (const root of roots) {
+      for (const selector of exactSelectors) {
+        try {
+          for (const el of root.querySelectorAll(selector)) {
+            if (copilotElementVisible(el)) return el;
+          }
+        } catch {}
+      }
+      let controls = [];
+      try { controls = root.querySelectorAll('button,[role="button"]'); } catch {}
+      for (const el of controls) {
+        if (!copilotElementVisible(el)) continue;
+        const label = labelOf(el);
+        if (label && STOP_TEXT_RE.test(label)) return el;
+      }
+    }
+    return null;
+  }
+
+  function copilotControlSnapshot(reason) {
+    if (state.site?.id !== 'copilot') return;
+    const roots = copilotDocumentRoots();
+    const controls = [];
+    let shadowRoots = 0;
+    let frameDocs = new Set();
+    for (const root of roots) {
+      if (root instanceof ShadowRoot) shadowRoots += 1;
+      try { if (root.ownerDocument && root.ownerDocument !== document) frameDocs.add(root.ownerDocument); } catch {}
+      let nodes = [];
+      try { nodes = [...root.querySelectorAll('button,[role="button"],[aria-label],[title],[data-testid],[data-test-id]')]; } catch {}
+      for (const el of nodes) {
+        if (!copilotElementVisible(el)) continue;
+        const aria = el.getAttribute?.('aria-label');
+        const title = el.getAttribute?.('title');
+        const testid = el.getAttribute?.('data-testid') || el.getAttribute?.('data-test-id') || el.getAttribute?.('data-test');
+        const cls = String(el.getAttribute?.('class') || '').slice(0,160);
+        const actionMeta = `${aria||''} ${title||''} ${testid||''}`;
+        if (!/(stop|cancel|send|submit|generat|respond|stream|copilot|chat|prompt|останов|прерват|прекрат|зупин|перерват|detener|parar|stoppen|arr[êe]ter|interromper|ferma|zatrzymaj|przerwij|durdur|hentikan|dừng|إيقاف|रोक|停止|生成を停止|중지)/i.test(actionMeta)) continue;
+        controls.push({tag:el.tagName?.toLowerCase?.()||'',role:el.getAttribute?.('role'),aria,title,testid,class:cls});
+        if (controls.length >= 28) break;
+      }
+      if (controls.length >= 28) break;
+    }
+    let editor = null;
+    for (const root of roots) {
+      try {
+        const el = root.querySelector('#m365-chat-editor-target-element,[data-lexical-editor="true"],textarea,[contenteditable="true"]');
+        if (el) { editor = {tag:el.tagName?.toLowerCase?.()||'',id:el.id||null,role:el.getAttribute?.('role'),aria:el.getAttribute?.('aria-label'),lexical:el.getAttribute?.('data-lexical-editor')}; break; }
+      } catch {}
+    }
+    const snapshot = {reason, rootCount: roots.length, shadowRoots, sameOriginFrameDocs: frameDocs.size, editor, controls};
+    let signature='';
+    try { signature=JSON.stringify(snapshot); } catch {}
+    if (signature && signature === state.copilotSnapshotSignature) return;
+    state.copilotSnapshotSignature = signature;
+    if (state.copilotSnapshotCount >= 12) return;
+    state.copilotSnapshotCount += 1;
+    log('Copilot control snapshot', snapshot);
+  }
+
+  function startCopilotPolling() {
+    if (state.site?.id !== 'copilot' || state.copilotPollTimer) return;
+    state.copilotPollTimer = setInterval(() => {
+      if (!isCurrentInstance() || !state.watching || state.mode !== 'ai' || state.site?.id !== 'copilot') return;
+      scheduleEvaluate();
+    }, 250);
+  }
+
+  function stopCopilotPolling() {
+    if (state.copilotPollTimer) clearInterval(state.copilotPollTimer);
+    state.copilotPollTimer = null;
+  }
+
   function findStopControl() {
+    const copilot = findCopilotStopControl();
+    if (copilot) return copilot;
     const deepseek = findDeepseekStopControl();
     if (deepseek) return deepseek;
     for (const selector of STOP_SELECTORS) {
@@ -423,6 +570,184 @@
     }
   }
 
+  function clearGeminiNetworkFinishTimer() {
+    clearTimeout(state.geminiNetworkFinishTimer);
+    state.geminiNetworkFinishTimer = null;
+  }
+
+  function resetGeminiNetworkTracking() {
+    clearGeminiNetworkFinishTimer();
+    state.geminiInflight.clear();
+    state.geminiGenerationStartedAt = 0;
+    state.geminiAwaitingDomIdle = false;
+  }
+
+  function setGeminiNetworkTrace(enabled, reason = '') {
+    if (state.site?.id !== 'gemini') return;
+    try {
+      window.postMessage({
+        __donebellGeminiNetworkBridgeCommand: true,
+        version: DONEBELL_INSTANCE_VERSION,
+        kind: enabled ? 'network-trace-enable' : 'network-trace-disable',
+        reason: String(reason || '').slice(0, 80)
+      }, location.origin);
+    } catch (error) {
+      log('Could not command Gemini network trace', { enabled: Boolean(enabled), reason, error: String(error) }, 'info');
+    }
+  }
+
+  async function ensureGeminiNetworkBridge() {
+    if (state.site?.id !== 'gemini') return false;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'ensure-gemini-network-bridge' });
+      state.geminiBridgeReady = Boolean(response?.ok);
+      log(state.geminiBridgeReady ? 'Gemini network bridge requested' : 'Gemini network bridge unavailable', { ok: state.geminiBridgeReady });
+      if (state.geminiBridgeReady && state.watching && state.mode === 'ai') {
+        setGeminiNetworkTrace(true, 'watch-active-after-bridge');
+      }
+      return state.geminiBridgeReady;
+    } catch (error) {
+      state.geminiBridgeReady = false;
+      log('Could not request Gemini network bridge', { error: String(error) }, 'error');
+      return false;
+    }
+  }
+
+  function startGeminiGeneration(reason = 'dom-stop') {
+    if (!state.watching || state.mode !== 'ai' || state.site?.id !== 'gemini') return;
+    state.geminiGenerationSerial += 1;
+    state.geminiGenerationStartedAt = Date.now();
+    state.geminiAwaitingDomIdle = false;
+    clearGeminiNetworkFinishTimer();
+    const serial = state.geminiGenerationSerial;
+    const cutoff = Date.now() - 5000;
+    let correlated = 0;
+    for (const request of state.geminiInflight.values()) {
+      if (request.startedAt >= cutoff) {
+        request.generationSerial = serial;
+        correlated += 1;
+      }
+    }
+    log('Gemini generation correlated with network activity', { reason, serial, correlated });
+  }
+
+  function geminiRelevantInflightCount() {
+    const serial = state.geminiGenerationSerial;
+    let count = 0;
+    for (const request of state.geminiInflight.values()) if (request.generationSerial === serial) count += 1;
+    return count;
+  }
+
+  function confirmGeminiNetworkFinished() {
+    clearGeminiNetworkFinishTimer();
+    state.geminiNetworkFinishTimer = setTimeout(() => {
+      state.geminiNetworkFinishTimer = null;
+      if (!state.watching || state.mode !== 'ai' || state.site?.id !== 'gemini') return;
+      if (!state.sawGeneration || !state.geminiGenerationStartedAt) return;
+      const inflight = geminiRelevantInflightCount();
+      if (inflight > 0) {
+        log('Gemini network finish deferred because correlated requests remain', { inflight, serial: state.geminiGenerationSerial });
+        return;
+      }
+      const elapsedMs = Date.now() - state.geminiGenerationStartedAt;
+      if (elapsedMs < 250) return;
+
+      const staleStopPresent = Boolean(findStopControl());
+      // v0.5.10 diagnostic behavior: a generic batchexecute lull is NOT a
+      // trustworthy completion signal. Keep the normal DOM watcher authoritative
+      // and only record this point for correlation analysis.
+      log('Gemini network idle candidate observed — diagnostic only', {
+        serial: state.geminiGenerationSerial, elapsedMs, staleStopPresent, visibility: document.visibilityState
+      });
+    }, FINISH_STABLE_MS);
+  }
+
+  function handleGeminiBridgeMessage(event) {
+    if (!isCurrentInstance() || event.source !== window || event.origin !== location.origin) return;
+    const message = event.data;
+    if (!message || message.__donebellGeminiNetworkBridge !== true) return;
+    if (state.site?.id !== 'gemini') return;
+
+    if (message.kind === 'bridge-ready') {
+      state.geminiBridgeReady = true;
+      log('Gemini network bridge ready', { bridgeVersion: message.version, reused: Boolean(message.reused) });
+      if (state.watching && state.mode === 'ai') setGeminiNetworkTrace(true, 'bridge-ready');
+      return;
+    }
+
+    if (message.kind === 'network-trace-state') {
+      log('Gemini network trace state', {
+        enabled: Boolean(message.enabled),
+        reason: String(message.reason || '')
+      });
+      return;
+    }
+
+    if (message.kind === 'socket-open' || message.kind === 'socket-message' || message.kind === 'socket-close' ||
+        message.kind === 'eventsource-open' || message.kind === 'eventsource-message' || message.kind === 'eventsource-error') {
+      log('Gemini alternate transport activity', {
+        kind: message.kind,
+        id: String(message.id || ''),
+        transport: String(message.transport || ''),
+        host: String(message.host || '').slice(0, 160),
+        path: String(message.path || '').slice(0, 260),
+        responseBytes: Number(message.responseBytes) || 0,
+        code: Number(message.code) || 0,
+        visibility: document.visibilityState
+      });
+      return;
+    }
+
+    if (!message.id) return;
+    if (message.kind === 'request-start') {
+      const request = {
+        id: String(message.id),
+        startedAt: Date.now(),
+        rpcids: String(message.rpcids || '').slice(0, 160),
+        transport: String(message.transport || ''),
+        host: String(message.host || '').slice(0, 160),
+        path: String(message.path || '').slice(0, 260),
+        requestKind: String(message.networkKind || ''),
+        generationSerial: state.sawGeneration ? state.geminiGenerationSerial : 0
+      };
+      state.geminiInflight.set(request.id, request);
+      if (state.geminiInflight.size > 40) {
+        const oldest = state.geminiInflight.keys().next().value;
+        if (oldest) state.geminiInflight.delete(oldest);
+      }
+      log('Gemini network request started', {
+        id: request.id, host: request.host, path: request.path, requestKind: request.requestKind, rpcids: request.rpcids, transport: request.transport,
+        requestBytes: Number(message.requestBytes) || 0,
+        correlated: Boolean(request.generationSerial), visibility: document.visibilityState
+      });
+      return;
+    }
+
+    if (message.kind === 'request-complete' || message.kind === 'request-error') {
+      const request = state.geminiInflight.get(String(message.id));
+      state.geminiInflight.delete(String(message.id));
+      if (!request) return;
+      const currentSerial = state.geminiGenerationSerial;
+      if (!request.generationSerial && state.sawGeneration && state.geminiGenerationStartedAt && request.startedAt >= state.geminiGenerationStartedAt - 5000) {
+        request.generationSerial = currentSerial;
+      }
+      log(message.kind === 'request-complete' ? 'Gemini network request completed' : 'Gemini network request failed', {
+        id: request.id, host: request.host, path: request.path, requestKind: request.requestKind, rpcids: request.rpcids, transport: request.transport,
+        durationMs: Number(message.durationMs) || 0, status: Number(message.status) || 0,
+        requestBytes: Number(message.requestBytes) || 0,
+        responseBytes: Number(message.responseBytes) || 0,
+        responseChunks: Number(message.responseChunks) || 0,
+        firstProgressMs: Number.isFinite(Number(message.firstProgressMs)) ? Number(message.firstProgressMs) : null,
+        contentType: String(message.contentType || '').slice(0, 100),
+        correlated: request.generationSerial === currentSerial, visibility: document.visibilityState
+      }, message.kind === 'request-error' ? 'info' : 'info');
+      if (message.kind === 'request-complete' && state.sawGeneration && request.generationSerial === currentSerial && geminiRelevantInflightCount() === 0) {
+        confirmGeminiNetworkFinished();
+      }
+    }
+  }
+
+
   function conditionLabel(condition) {
     const map = {
       disappear: 'conditionDisappear', hidden: 'conditionHidden', textChange: 'conditionTextChange',
@@ -486,6 +811,19 @@
   function evaluateAi() {
     if (state.site?.id === 'deepseek') maybeLogDeepseekSnapshot('mutation');
     const stopPresent = Boolean(findStopControl());
+
+    // Legacy guard retained from the earlier Gemini experiment. v0.5.13 does
+    // not use network activity as a completion signal; DOM remains authoritative.
+    if (state.site?.id === 'gemini' && state.geminiAwaitingDomIdle) {
+      state.lastStopPresent = stopPresent;
+      if (!stopPresent) {
+        state.geminiAwaitingDomIdle = false;
+        state.lastStopPresent = false;
+        log('Gemini stale background busy UI reconciled');
+      }
+      return;
+    }
+
     if (stopPresent) {
       clearTimeout(state.pendingFinishTimer);
       state.pendingFinishTimer = null;
@@ -574,8 +912,9 @@
   }
 
   function scheduleEvaluate() {
+    if (!isCurrentInstance()) return;
     if (state.evaluateTimer) return;
-    state.evaluateTimer = setTimeout(evaluate, 70);
+    state.evaluateTimer = setTimeout(() => { if (isCurrentInstance()) evaluate(); }, 70);
   }
 
   function clearTimers() {
@@ -585,11 +924,13 @@
 
   function enableAiWatch(autoStarted = false) {
     clearTimers();
+    resetGeminiNetworkTracking();
     state.watching = true;
     state.mode = 'ai';
     state.autoStarted = Boolean(autoStarted);
     state.rule = null;
     hideWatchHud();
+    if (state.site?.id === 'copilot') { state.copilotSnapshotCount = 0; state.copilotSnapshotSignature = null; startCopilotPolling(); }
     let stopPresent = Boolean(findStopControl());
     if (state.site?.id === 'deepseek' && !stopPresent) {
       const action = deepseekPrimaryAction();
@@ -603,11 +944,13 @@
     sendStatus(stopPresent ? 'generating' : 'armed');
     log('AI watcher enabled', { site: state.site, stopPresent, url: location.href });
     if (state.site?.id === 'deepseek') maybeLogDeepseekSnapshot('watch-enabled');
+    if (state.site?.id === 'copilot') copilotControlSnapshot('watch-enabled');
     scheduleEvaluate();
   }
 
   function disableWatch(reason = 'manual') {
     clearTimers();
+    stopCopilotPolling();
     state.watching = false;
     state.mode = null;
     state.rule = null;
@@ -615,6 +958,9 @@
     state.sawGeneration = false;
     state.deepseekSnapshotSignature = null;
     state.deepseekIdleFingerprint = null;
+    state.copilotSnapshotSignature = null;
+    state.copilotSnapshotCount = 0;
+    resetGeminiNetworkTracking();
     state.autoStarted = false;
     hideWatchHud();
     unregisterWatch();
@@ -780,6 +1126,7 @@
     uiAppearance = normalizeUiAppearance(appearanceSettings);
   }).catch(() => {});
   chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (!isCurrentInstance()) return;
     if (areaName !== 'local') return;
     let rerender = false;
     if (changes.uiLanguage) { uiLanguage = I18N.resolveLanguage(changes.uiLanguage.newValue || 'auto', navigator.language); rerender = true; }
@@ -795,6 +1142,7 @@
   });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!isCurrentInstance()) return;
     if (message?.type === 'ping-donebell') {
       sendResponse({ ok: true, version: chrome.runtime.getManifest().version }); return;
     }
@@ -803,9 +1151,36 @@
         ok: true, watching: state.watching, mode: state.mode, site: state.site,
         stopPresent: Boolean(findStopControl()), sawGeneration: state.sawGeneration,
         rule: state.rule ? publicRule(state.rule) : null, soundPlaying: state.soundPlaying, completionActive: state.completionActive,
-        visibility: document.visibilityState, focused: document.hasFocus(), url: location.href, autoStarted: state.autoStarted
+        visibility: document.visibilityState, focused: document.hasFocus(), url: location.href, autoStarted: state.autoStarted,
+        geminiAwaitingDomIdle: state.site?.id === 'gemini' ? state.geminiAwaitingDomIdle : undefined
       });
       return;
+    }
+    if (message?.type === 'gemini-streamgenerate-complete') {
+      const eligible = state.watching && state.mode === 'ai' && state.site?.id === 'gemini' && state.sawGeneration;
+      if (!eligible) {
+        log('Gemini StreamGenerate completion ignored', {
+          watching: state.watching, mode: state.mode, site: state.site?.id || null, sawGeneration: state.sawGeneration,
+          durationMs: Number(message.durationMs) || 0
+        });
+        sendResponse({ ok: true, accepted: false }); return;
+      }
+      clearTimeout(state.pendingFinishTimer);
+      state.pendingFinishTimer = null;
+      const staleStopPresent = Boolean(findStopControl());
+      state.sawGeneration = false;
+      state.lastStopPresent = staleStopPresent;
+      state.geminiAwaitingDomIdle = staleStopPresent;
+      sendStatus('done');
+      log('Gemini StreamGenerate completion accepted', {
+        durationMs: Number(message.durationMs) || 0, staleStopPresent, visibility: document.visibilityState
+      });
+      reportComplete({
+        kind: 'gemini-streamgenerate-complete',
+        durationMs: Number(message.durationMs) || 0,
+        staleStopPresent
+      });
+      sendResponse({ ok: true, accepted: true }); return;
     }
     if (message?.type === 'set-ai-watch') {
       if (message.enabled) enableAiWatch(false); else disableWatch('popup');
@@ -876,6 +1251,7 @@
   });
 
   setInterval(() => {
+    if (!isCurrentInstance()) return;
     if (location.href !== state.lastLocation) {
       const previous = state.lastLocation;
       state.lastLocation = location.href;
@@ -897,6 +1273,6 @@
       if (cfg.autoWatch && !state.watching) { enableAiWatch(true); log('AI watcher auto-armed on page load', { site: state.site, url: location.href }); }
     } catch (error) { log('Could not evaluate auto-watch on page load', { error: String(error), site: state.site }, 'error'); }
   }
-  setTimeout(() => { maybeAutoArmOnLoad().catch(() => {}); }, 150);
+  setTimeout(() => { if (isCurrentInstance()) maybeAutoArmOnLoad().catch(() => {}); }, 150);
   log('DoneBell content script ready', { site: state.site, url: location.href, version: chrome.runtime.getManifest().version });
 })();
