@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.5.21 — Notification title cleanup and watcher-safe recovery
+
+### ChatGPT notifications
+- Snapshot a stable tab title when a watch is armed and refresh it when an AI generation enters the busy state.
+- For ChatGPT on non-CJK DoneBell UI languages, remove only a suspicious whitespace-separated trailing CJK-only fragment from an otherwise normal notification title.
+- Chinese, Japanese and Korean DoneBell UI languages keep CJK titles unchanged.
+- Notification-title cleanup is best-effort and fail-open; it cannot block completion alerts.
+
+### Watcher reliability
+- Kept the fix outside the watcher startup/evaluation path so notification cleanup cannot prevent a watcher from arming.
+- Preserved the existing detector, audio, focus, navigation, permissions and split-i18n behavior from v0.5.18.
+
+`0.5.19` and `0.5.20` were internal test candidates while this fix was being validated and were not published as public releases.
+
 ## v0.5.18 — Gemini background completion and Copilot compatibility
 
 ### Gemini

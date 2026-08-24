@@ -1,6 +1,6 @@
 # 🔔 DoneBell
 
-**Public Beta · v0.5.18 · Chrome / Edge**
+**Public Beta · v0.5.21 · Chrome / Edge**
 
 [EN](README_EN.md) · [RU](README_RU.md) · [ES](README_ES.md) · [DE](README_DE.md) · [FR](README_FR.md) · [PT-BR](README_PT_BR.md) · [简中](README_ZH_CN.md) · [繁中](README_ZH_TW.md) · [JA](README_JA.md) · [KO](README_KO.md) · [AR](README_AR.md) · [HI](README_HI.md) · [ID](README_ID.md) · [TR](README_TR.md) · [IT](README_IT.md) · [PL](README_PL.md) · [UK](README_UK.md) · [VI](README_VI.md)
 
@@ -71,7 +71,7 @@ If something breaks on an AI site, attaching DoneBell diagnostics to the issue i
 
 ## Release notes
 
-See [RELEASE_NOTES_0.5.18.md](RELEASE_NOTES_0.5.18.md) and [CHANGELOG.md](CHANGELOG.md).
+See [RELEASE_NOTES_0.5.21.md](RELEASE_NOTES_0.5.21.md) and [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
