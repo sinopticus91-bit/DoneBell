@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.5.36 — Playlist player, audio routing and reliability release
+
+### Playlist and player
+- Added a multi-track local playlist stored in IndexedDB, folder/bulk import and no artificial track-count cap.
+- Added random, sequential and fixed-track alert selection with per-site and per-tab inheritance.
+- Added a full player with previous/play-pause/next/stop, volume, seek/progress, shuffle without repeats, repeat playlist and repeat one.
+- Added Media Session controls so browser/OS Previous, Next and seek actions control DoneBell playback.
+- Added protected playback so completion alerts and their Close/Stop controls can acknowledge a task without interrupting music.
+- Protected completion audio can continue through the full player and automatically advance to the next track.
+
+### Reliability
+- Added a dedicated ChatGPT generation Stop detector to avoid unrelated voice/audio/share controls.
+- Reduced ChatGPT mutation-observer work and throttled evaluations.
+- Added duplicate-completion protection, completion UI/watchdog recovery and stale-completion cleanup.
+- Added Emergency Stop and strengthened Full Reset.
+- Player protection now checks the live offscreen audio state across service-worker suspension/restart.
+
+### Quality of life
+- Added silent-when-active, per-site/per-tab mute, Now Playing controls, settings export/import and Self-test.
+- Added update-available / What's New UI and a manual update check.
+
+`0.5.22` through `0.5.35` were internal development/test candidates and were not published as public releases.
+
 ## v0.5.21 — Notification title cleanup and watcher-safe recovery
 
 ### ChatGPT notifications
