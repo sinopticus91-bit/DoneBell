@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - '.release_payload/**'
+      - '.release_payload2/**'
       - '.github/workflows/release-v0536-sync.yml'
 
 permissions:
@@ -19,7 +19,7 @@ jobs:
       - name: Rebuild and verify release patch
         shell: bash
         run: |
-          cat .release_payload/patch.b64.part* | base64 -d | gzip -d > /tmp/donebell-v0536.patch
+          cat .release_payload2/chunk* | base64 -d | gzip -d > /tmp/donebell-v0536.patch
           echo "831d59a6997b23fc09aded99c50b1a05b53ac8cce806163dfc8fe2086b844c7d  /tmp/donebell-v0536.patch" | sha256sum -c -
           git apply --check /tmp/donebell-v0536.patch
           git apply /tmp/donebell-v0536.patch
@@ -33,7 +33,7 @@ jobs:
       - name: Commit public release source
         shell: bash
         run: |
-          rm -rf .release_payload
+          rm -rf .release_payload .release_payload2
           rm -f .github/workflows/release-v0536-sync.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
