@@ -47,7 +47,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // Override only the notification creator from background.js. Existing detector,
 // sound, focus, navigation, permissions and i18n behavior remains untouched.
-async function createDoneNotification(tab, site, title) {
+async function createDoneNotification(tab, site, title, expectedEpoch = null) {
+  if (expectedEpoch != null && expectedEpoch !== emergencyStopEpoch) return null;
   const notificationId = `donebell:${tab.id}:${Date.now()}`;
   const siteName = site?.name || 'Browser task';
   const language = await getUiLanguage();
@@ -71,6 +72,7 @@ async function createDoneNotification(tab, site, title) {
   }
 
   doneBellTitleSnapshots0521.delete(tab.id);
+  if (expectedEpoch != null && expectedEpoch !== emergencyStopEpoch) return null;
   await chrome.notifications.create(notificationId, {
     type: 'basic',
     iconUrl: 'icons/icon128.png',
@@ -81,6 +83,10 @@ async function createDoneNotification(tab, site, title) {
     silent: true,
     buttons: [{ title: `■ ${await tr('stopSound')}` }]
   });
+  if (expectedEpoch != null && expectedEpoch !== emergencyStopEpoch) {
+    try { await chrome.notifications.clear(notificationId); } catch {}
+    return null;
+  }
   await appendLog('background', 'info', 'System notification created', { tabId: tab.id, site: siteName, notificationId });
   return notificationId;
 }

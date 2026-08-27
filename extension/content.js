@@ -51,6 +51,7 @@
     site: null,
     lastStopPresent: false,
     sawGeneration: false,
+    aiGenerationSerial: 0,
     pendingFinishTimer: null,
     evaluateTimer: null,
     rule: null,
@@ -377,7 +378,64 @@
     state.copilotPollTimer = null;
   }
 
+  const CHATGPT_STOP_SELECTORS = [
+    'button[data-testid="stop-button"]',
+    '[role="button"][data-testid="stop-button"]',
+    'button[aria-label*="stop generating" i]',
+    '[role="button"][aria-label*="stop generating" i]',
+    'button[aria-label*="stop responding" i]',
+    '[role="button"][aria-label*="stop responding" i]',
+    'button[aria-label*="stop response" i]',
+    '[role="button"][aria-label*="stop response" i]',
+    'button[aria-label*="cancel generation" i]',
+    '[role="button"][aria-label*="cancel generation" i]'
+  ];
+
+  const CHATGPT_STOP_CONTEXT_RE = /(?:generat|respond|response|stream|генерац|ответ|создан|respuesta|generaci[oó]n|antwort|g[ée]n[ée]ration|r[ée]ponse|resposta|risposta|odpowied|yan[ıi]t|cevap|respons|trả lời|生成|回答|응답)/i;
+  const CHATGPT_NON_GENERATION_STOP_RE = /(?:voice|audio|read aloud|microphone|record|screen|sharing|share|голос|аудио|микрофон|запис|экран|озвуч|lectura|voz|audio|mikrofon|aufnahme|voix|lecture|microphone|grava|lettura|głos|nagry|ses|kayıt|suara|rekam|音声|読み上げ|麦克风|語音|마이크|음성)/i;
+
+  function stopControlMeta(el) {
+    if (!(el instanceof Element)) return null;
+    return {
+      tag: el.tagName.toLowerCase(),
+      testid: el.getAttribute('data-testid') || el.getAttribute('data-test-id') || el.getAttribute('data-test'),
+      aria: String(el.getAttribute('aria-label') || '').slice(0, 120),
+      title: String(el.getAttribute('title') || '').slice(0, 120)
+    };
+  }
+
+  function findChatGPTStopControl() {
+    if (state.site?.id !== 'chatgpt') return null;
+    // ChatGPT-specific rule: only trust a Stop control in the composer area.
+    // The old generic whole-page scan could match unrelated visible controls
+    // (for example voice/audio/share controls) after the answer had finished.
+    const root = composerRoot();
+    if (!root) return null;
+
+    for (const selector of CHATGPT_STOP_SELECTORS) {
+      try {
+        for (const el of root.querySelectorAll(selector)) {
+          if (isVisible(el)) return el;
+        }
+      } catch {}
+    }
+
+    let controls = [];
+    try { controls = root.querySelectorAll('button,[role="button"]'); } catch {}
+    for (const el of controls) {
+      if (!isVisible(el)) continue;
+      const label = labelOf(el);
+      if (!label || label.length > 180) continue;
+      if (CHATGPT_NON_GENERATION_STOP_RE.test(label)) continue;
+      if (STOP_TEXT_RE.test(label) && CHATGPT_STOP_CONTEXT_RE.test(label)) return el;
+    }
+    return null;
+  }
+
   function findStopControl() {
+    const chatgpt = findChatGPTStopControl();
+    if (state.site?.id === 'chatgpt') return chatgpt;
+
     const copilot = findCopilotStopControl();
     if (copilot) return copilot;
     const deepseek = findDeepseekStopControl();
@@ -486,6 +544,32 @@
     else sendStatus('off');
     chrome.runtime.sendMessage({ type: 'completion-acknowledged' }).catch(() => {});
     log('Done signal explicitly acknowledged by user');
+  }
+
+
+  function emergencyStopLocal(reason = 'emergency-stop') {
+    clearTimers();
+    stopCopilotPolling();
+    state.completionActive = false;
+    state.soundPlaying = false;
+    stopTitleFlash(true);
+    hideDonePanel();
+    hideWatchHud();
+    removePicker();
+    state.watching = false;
+    state.mode = null;
+    state.rule = null;
+    state.lastStopPresent = false;
+    state.sawGeneration = false;
+    state.autoStarted = false;
+    state.deepseekSnapshotSignature = null;
+    state.deepseekIdleFingerprint = null;
+    state.copilotSnapshotSignature = null;
+    state.copilotSnapshotCount = 0;
+    resetGeminiNetworkTracking();
+    try { setGeminiNetworkTrace(false, reason); } catch {}
+    sendStatus('off');
+    log('Emergency stop cleared local DoneBell state', { reason, url: location.href });
   }
 
   function hideDonePanel() {
@@ -789,7 +873,9 @@
       site: state.site,
       title: document.title,
       url: location.href,
-      trigger
+      trigger,
+      generationSerial: state.aiGenerationSerial,
+      watcherInstance: instanceToken
     }).catch((error) => log('Could not report task complete', { error: String(error) }, 'error'));
   }
 
@@ -810,7 +896,8 @@
 
   function evaluateAi() {
     if (state.site?.id === 'deepseek') maybeLogDeepseekSnapshot('mutation');
-    const stopPresent = Boolean(findStopControl());
+    const stopControl = findStopControl();
+    const stopPresent = Boolean(stopControl);
 
     // Legacy guard retained from the earlier Gemini experiment. v0.5.13 does
     // not use network activity as a completion signal; DOM remains authoritative.
@@ -829,7 +916,19 @@
       state.pendingFinishTimer = null;
       if (!state.lastStopPresent) {
         state.sawGeneration = true;
-        log('AI busy/Stop control detected', { site: state.site.name });
+        state.aiGenerationSerial += 1;
+        if (state.completionActive) {
+          state.completionActive = false;
+          stopTitleFlash(true);
+          hideDonePanel();
+          chrome.runtime.sendMessage({ type: 'completion-acknowledged' }).catch(() => {});
+          log('Previous completion UI cleared because a new generation started');
+        }
+        log('AI busy/Stop control detected', {
+          site: state.site.name,
+          detector: state.site?.id === 'chatgpt' ? 'chatgpt-composer' : (state.site?.detector || null),
+          control: state.site?.id === 'chatgpt' ? stopControlMeta(stopControl) : undefined
+        });
         sendStatus('generating');
       }
       state.lastStopPresent = true;
@@ -912,9 +1011,14 @@
   }
 
   function scheduleEvaluate() {
-    if (!isCurrentInstance()) return;
+    if (!isCurrentInstance() || !state.watching) return;
     if (state.evaluateTimer) return;
-    state.evaluateTimer = setTimeout(() => { if (isCurrentInstance()) evaluate(); }, 70);
+    // ChatGPT can mutate a large streaming conversation very frequently. Cap
+    // detector evaluation frequency there so DoneBell never competes with the
+    // page's own rendering loop; completion latency remains dominated by the
+    // existing FINISH_STABLE_MS confirmation window.
+    const delayMs = state.mode === 'ai' && state.site?.id === 'chatgpt' ? 220 : 70;
+    state.evaluateTimer = setTimeout(() => { if (isCurrentInstance()) evaluate(); }, delayMs);
   }
 
   function clearTimers() {
@@ -940,6 +1044,7 @@
     }
     state.lastStopPresent = stopPresent;
     state.sawGeneration = stopPresent;
+    if (stopPresent) state.aiGenerationSerial += 1;
     registerWatch();
     sendStatus(stopPresent ? 'generating' : 'armed');
     log('AI watcher enabled', { site: state.site, stopPresent, url: location.href });
@@ -1135,7 +1240,15 @@
     if (rerender && state.watchHudHost) showWatchHud();
   });
 
-  const observer = new MutationObserver(scheduleEvaluate);
+  const observer = new MutationObserver((mutations) => {
+    if (!isCurrentInstance() || !state.watching) return;
+    // Streaming answer text can generate a very high volume of characterData
+    // mutations. AI completion detection depends on Stop/Cancel controls, not
+    // on the answer text itself, so ignore batches that only change text. The
+    // universal text-change watcher still receives characterData mutations.
+    if (state.mode === 'ai' && mutations.length && mutations.every((m) => m.type === 'characterData')) return;
+    scheduleEvaluate();
+  });
   observer.observe(document.documentElement, {
     childList: true, subtree: true, characterData: true, attributes: true,
     attributeFilter: ['aria-label', 'title', 'data-testid', 'data-test', 'data-cy', 'disabled', 'aria-disabled', 'aria-busy', 'hidden', 'class', 'style']
@@ -1185,6 +1298,9 @@
     if (message?.type === 'set-ai-watch') {
       if (message.enabled) enableAiWatch(false); else disableWatch('popup');
       sendResponse({ ok: true, watching: state.watching, mode: state.mode }); return;
+    }
+    if (message?.type === 'emergency-stop-all') {
+      emergencyStopLocal(message.reason || 'emergency-stop'); sendResponse({ ok: true, watching: false, mode: null }); return;
     }
     if (message?.type === 'disable-watch') {
       disableWatch(message.reason || 'popup'); sendResponse({ ok: true }); return;
@@ -1261,6 +1377,17 @@
         const fp = deepseekActionFingerprint(deepseekPrimaryAction());
         if (fp) state.deepseekIdleFingerprint = fp;
       }
+    }
+    // Completion watchdog: if the host page re-renders our panel away, restore it.
+    // Conversely, stale DoneBell surfaces must never survive after completion is inactive.
+    if (state.completionActive) {
+      if (state.completionSettings?.inPagePanel && (!state.donePanelHost || !state.donePanelHost.isConnected)) {
+        renderDonePanel();
+        log('Completion watchdog restored missing in-page panel');
+      }
+    } else {
+      if (state.donePanelHost?.isConnected) hideDonePanel();
+      if (state.titleFlashTimer) stopTitleFlash(true);
     }
     if (state.watching) scheduleEvaluate();
   }, 1000);

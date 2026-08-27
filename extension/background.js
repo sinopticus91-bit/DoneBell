@@ -6,11 +6,36 @@ const SITE_SETTINGS_KEY = 'siteSettings';
 const GLOBAL_PROFILE_KEY = 'globalProfile';
 const APPEARANCE_KEY = 'appearanceSettings';
 const MAX_LOGS = 500;
+const AUDIO_DB_NAME = 'DoneBellAudio';
+const AUDIO_DB_VERSION = 1;
+const AUDIO_STORE = 'tracks';
+const PLAYLIST_META_KEY = 'soundPlaylistMeta';
+const SOUND_SOURCE_KEY = 'soundSource';
+const SOUND_DURATION_DEFAULT_KEY = 'soundDurationDefault';
+const SOUND_DURATION_SECONDS_KEY = 'soundDurationSeconds';
+const PRESERVE_CURRENT_TRACK_KEY = 'preserveCurrentTrack';
+const PROTECT_PLAYER_FROM_ALERT_STOPS_KEY = 'protectPlayerFromAlertStops';
+
+function openAudioDbBackground() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(AUDIO_DB_NAME, AUDIO_DB_VERSION);
+    req.onupgradeneeded = () => { const db = req.result; if (!db.objectStoreNames.contains(AUDIO_STORE)) db.createObjectStore(AUDIO_STORE, { keyPath: 'id' }); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('Could not open audio database'));
+  });
+}
+async function clearAudioPlaylistDb() {
+  const db = await openAudioDbBackground();
+  try { await new Promise((resolve, reject) => { const tx = db.transaction(AUDIO_STORE, 'readwrite'); tx.objectStore(AUDIO_STORE).clear(); tx.oncomplete = resolve; tx.onerror = () => reject(tx.error || new Error('Could not clear audio database')); }); }
+  finally { db.close(); }
+}
+
 
 const DEFAULT_SETTINGS = {
   soundEnabled: true,
   soundVolume: 1,
   repeatSound: false,
+  silentWhenActive: false,
   focusTab: false,
   stopOnTabFocus: false,
   stopOnAutoFocus: false,
@@ -38,6 +63,9 @@ let registryWriteChain = Promise.resolve();
 let activeAudioOwnerTabId = null;
 let audioPlaying = false;
 let activeAudioReason = null;
+let audioStartReservation = false;
+let emergencyStopEpoch = 0;
+const completionDedupeByTab = new Map();
 
 // Gemini background-completion support.
 // Gemini may delay DOM updates while its tab is in the background. While a
@@ -247,27 +275,163 @@ async function ensureOffscreenDocument() {
   }
 }
 
-async function playSound(reason = 'completion', ownerTabId = null, alertSettings = null) {
-  const stored = await chrome.storage.local.get(['customSoundDataUrl', 'customSoundName', 'soundVolume', 'repeatSound']);
+async function playSound(reason = 'completion', ownerTabId = null, alertSettings = null, expectedEpoch = null) {
+  if (expectedEpoch != null && expectedEpoch !== emergencyStopEpoch) return false;
+  const stored = await chrome.storage.local.get(['customSoundDataUrl','customSoundName','soundVolume','repeatSound',PLAYLIST_META_KEY,SOUND_SOURCE_KEY,SOUND_DURATION_DEFAULT_KEY,SOUND_DURATION_SECONDS_KEY]);
   const effective = alertSettings || stored;
   const rawVolume = effective.soundVolume ?? stored.soundVolume;
   const volume = Number.isFinite(Number(rawVolume)) ? Math.max(0, Math.min(1, Number(rawVolume))) : 1;
   const repeat = Boolean(effective.repeatSound ?? stored.repeatSound);
-  const sound = stored.customSoundDataUrl
-    ? { mode: 'custom', dataUrl: stored.customSoundDataUrl, name: stored.customSoundName || 'custom', volume, repeat }
-    : { mode: 'builtin', name: 'built-in bell', volume, repeat };
+  const durationDefault = stored[SOUND_DURATION_DEFAULT_KEY] !== false;
+  const seconds = Math.max(1, Math.min(86400, Number(stored[SOUND_DURATION_SECONDS_KEY]) || 30));
+  const durationMs = durationDefault ? null : seconds * 1000;
+  const source = stored[SOUND_SOURCE_KEY] || (stored.customSoundDataUrl ? 'legacy-custom' : 'builtin');
+  const playlistMeta = Array.isArray(stored[PLAYLIST_META_KEY]) ? stored[PLAYLIST_META_KEY].filter(x => x && typeof x.id === 'string') : [];
+  let sound;
+  if (source === 'playlist' && playlistMeta.length) {
+    // Offscreen documents only expose chrome.runtime from the extension API set,
+    // so resolve playlist metadata here in the service worker and pass plain data.
+    const playlistCandidates = [...playlistMeta]
+      .sort(() => Math.random() - 0.5)
+      .map((item) => ({ id: item.id, name: item.name || 'playlist track' }));
+    sound = {
+      mode: 'playlist',
+      name: `playlist (${playlistMeta.length})`,
+      playlistCandidates,
+      volume,
+      repeat,
+      durationMs
+    };
+  } else if ((source === 'legacy-custom' || (!stored[SOUND_SOURCE_KEY] && stored.customSoundDataUrl)) && stored.customSoundDataUrl) {
+    sound = { mode: 'custom', dataUrl: stored.customSoundDataUrl, name: stored.customSoundName || 'custom', volume, repeat, durationMs };
+  } else {
+    sound = { mode: 'builtin', name: 'built-in bell', volume, repeat, durationMs };
+  }
 
   await ensureOffscreenDocument();
-  await appendLog('background', 'info', 'Requesting sound playback', { reason, ownerTabId, mode: sound.mode, name: sound.name, volume, repeat: sound.repeat });
+  if (expectedEpoch != null && expectedEpoch !== emergencyStopEpoch) return false;
+  await appendLog('background', 'info', 'Requesting sound playback', { reason, ownerTabId, mode: sound.mode, name: sound.name, volume, repeat: sound.repeat, durationMs });
   const response = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'play-sound', reason, ownerTabId, sound });
   if (response?.ok === false) throw new Error(response.error || 'Audio playback failed');
+  if (expectedEpoch != null && expectedEpoch !== emergencyStopEpoch) {
+    await stopSound('cancelled-by-emergency-stop');
+    return false;
+  }
+  return true;
+}
+
+async function offscreenDocumentExists() {
+  try {
+    if (!chrome.runtime.getContexts) return true;
+    const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT);
+    const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [offscreenUrl] });
+    return contexts.length > 0;
+  } catch { return true; }
+}
+
+async function shouldProtectPlayerFromAlertStop(reason) {
+  const alertStopReasons = new Set(['notification-stop-button', 'in-page-close-button']);
+  if (!alertStopReasons.has(String(reason || ''))) return false;
+
+  let liveReason = activeAudioReason;
+  let livePlaying = audioPlaying;
+  if (typeof dbOffscreenAudioState0529 === 'function') {
+    const live = await dbOffscreenAudioState0529();
+    if (live) {
+      liveReason = live.reason || liveReason;
+      livePlaying = Boolean(live.playing || livePlaying);
+    }
+  }
+
+  // The setting protects ANY currently playing DoneBell audio from the
+  // completion notification's Stop/Close controls. Previously it only
+  // protected tracks whose reason started with "player-", which meant a
+  // playlist track started directly by a completion event was still stopped.
+  if (!livePlaying) return false;
+
+  try {
+    const d = await chrome.storage.local.get(PROTECT_PLAYER_FROM_ALERT_STOPS_KEY);
+    const protect = Boolean(d[PROTECT_PLAYER_FROM_ALERT_STOPS_KEY]);
+    if (protect) {
+      await appendLog('background', 'info', 'Audio protected from completion Stop/Close control', {
+        reason,
+        liveAudioReason: liveReason || null,
+        activeAudioOwnerTabId
+      });
+    }
+    return protect;
+  } catch {
+    return false;
+  }
+}
+
+async function adoptProtectedCompletionAudioIntoPlayer(reason) {
+  if (typeof dbOffscreenAudioState0529 !== 'function' ||
+      typeof dbAdoptOrCreateSession0530 !== 'function' ||
+      typeof dbPlayerModeStored0530 !== 'function') return false;
+  try {
+    const live = await dbOffscreenAudioState0529();
+    if (!live?.playing || live.soundMode !== 'playlist' || !live.trackId) return false;
+    if (String(live.reason || '').startsWith('player-')) return true;
+
+    const { session } = await dbAdoptOrCreateSession0530(live.trackId);
+    const mode = await dbPlayerModeStored0530();
+    const response = await chrome.runtime.sendMessage({
+      target:'offscreen',
+      type:'adopt-current-audio-as-player',
+      repeatOne: mode === 'repeat-one'
+    });
+
+    if (response?.ok) {
+      audioPlaying = true;
+      activeAudioOwnerTabId = null;
+      activeAudioReason = 'player-adopted-completion';
+      await appendLog('background', 'info', 'Protected completion audio adopted into full player', {
+        reason,
+        trackId: live.trackId,
+        trackName: live.trackName || null,
+        playerMode: mode,
+        playerIndex: Number(session?.index) || 0
+      });
+      return true;
+    }
+  } catch (error) {
+    await appendLog('background', 'info', 'Could not adopt protected completion audio into player', {
+      reason,
+      error: String(error)
+    });
+  }
+  return false;
 }
 
 async function stopSound(reason = 'manual-stop') {
-  await ensureOffscreenDocument();
-  const response = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stop-sound', reason });
-  if (response?.ok === false) throw new Error(response.error || 'Could not stop sound');
-  return Boolean(response?.stopped);
+  if (await shouldProtectPlayerFromAlertStop(reason)) {
+    const adopted = await adoptProtectedCompletionAudioIntoPlayer(reason);
+    await appendLog('background', 'info', 'Stop/Close control acknowledged without stopping protected audio', {
+      reason,
+      activeAudioReason,
+      activeAudioOwnerTabId,
+      adoptedIntoPlayer: adopted
+    });
+    return false;
+  }
+  let stopped = false;
+  const exists = await offscreenDocumentExists();
+  if (exists) {
+    try {
+      const response = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stop-sound', reason });
+      if (response?.ok === false) throw new Error(response.error || 'Could not stop sound');
+      stopped = Boolean(response?.stopped);
+    } catch (error) {
+      await appendLog('background', 'info', 'Offscreen stop message failed; closing audio document anyway', { reason, error: String(error) });
+    }
+    try { await chrome.offscreen.closeDocument(); }
+    catch (error) { await appendLog('background', 'info', 'Offscreen audio document close skipped', { reason, error: String(error) }); }
+  }
+  audioPlaying = false;
+  activeAudioOwnerTabId = null;
+  activeAudioReason = null;
+  return stopped;
 }
 
 async function setLiveVolume(volume) {
@@ -370,15 +534,67 @@ async function syncAutoWatchSite(siteId,{injectOpenTabs=false}={}) {
 }
 async function syncAllAutoWatch(){for(const site of SITE_API.SITE_CATALOG)await syncAutoWatchSite(site.id);}
 
+
+async function clearAllDoneNotifications() {
+  try {
+    const all = await chrome.notifications.getAll();
+    for (const id of Object.keys(all || {})) await chrome.notifications.clear(id);
+  } catch {}
+}
+
+async function emergencyStopAll(reason = 'emergency-stop') {
+  emergencyStopEpoch += 1;
+  const epoch = emergencyStopEpoch;
+
+  // Clear the registry first so navigation/reload recovery cannot re-arm a watch
+  // while the emergency stop is propagating through open tabs.
+  try { await transientStore.set({ [WATCH_REGISTRY_KEY]: {} }); } catch {}
+
+  try { await stopSound(reason); } catch (error) {
+    await appendLog('background', 'error', 'Emergency audio stop failed', { reason, error: String(error) });
+  }
+  await clearAllDoneNotifications();
+
+  let tabsTouched = 0;
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      if (!Number.isInteger(tab.id)) continue;
+      const delivered = await sendToTab(tab.id, { type: 'emergency-stop-all', reason }, null);
+      if (delivered) tabsTouched += 1;
+      // Backward-compatible cleanup for tabs that still have an older DoneBell
+      // content script injected. v0.5.21-v0.5.23 already understand these two
+      // messages, so a newly installed kill-switch can still silence stale tabs.
+      await sendToTab(tab.id, { type: 'dismiss-completion' }, null);
+      await sendToTab(tab.id, { type: 'disable-watch', reason }, null);
+      try { await setBadge(tab.id, 'off'); } catch {}
+    }
+  } catch {}
+
+  // Defensive second clear after content scripts have disabled themselves.
+  try { await transientStore.set({ [WATCH_REGISTRY_KEY]: {} }); } catch {}
+  geminiBusySince.clear();
+  geminiStreamRequests.clear();
+  geminiWatchedTabs.clear();
+  audioPlaying = false;
+  activeAudioOwnerTabId = null;
+  activeAudioReason = null;
+
+  await appendLog('background', 'info', 'Emergency stop completed', { reason, epoch, tabsTouched });
+  return { ok: true, epoch, tabsTouched };
+}
+
 async function resetAllSettings(){
-  try{await stopSound('factory-reset');}catch{}
+  // Factory reset always begins with the same hard kill used by the emergency
+  // stop button, so audio/UI cannot survive a settings reset.
+  try{await emergencyStopAll('factory-reset');}catch{}
   for(const site of SITE_API.SITE_CATALOG){
     try{await unregisterAutoWatchScript(site.id);}catch{}
     try{await chrome.permissions.remove({origins:site.patterns});}catch{}
   }
-  try{const tabs=await chrome.tabs.query({});for(const tab of tabs){if(Number.isInteger(tab.id))await sendToTab(tab.id,{type:'disable-watch',reason:'factory-reset'},null);}}catch{}
+  try{await clearAudioPlaylistDb();}catch{}
   await chrome.storage.local.clear();
-  await chrome.storage.local.set({...DEFAULT_SETTINGS,uiLanguage:'auto',[GLOBAL_PROFILE_KEY]:'normal',[SITE_SETTINGS_KEY]:{},[APPEARANCE_KEY]:{fontFamily:'system',fontSize:14,backgroundColor:'#0d0d0f',accentColor:'#ffd42a',badgeBuiltinColor:'#38b35d',badgeDedicatedColor:'#ffbe24',badgeGenericColor:'#5591eb',badgeStrength:22},[LOG_KEY]:[]});
+  await chrome.storage.local.set({...DEFAULT_SETTINGS,[SOUND_SOURCE_KEY]:'builtin',[SOUND_DURATION_DEFAULT_KEY]:true,[SOUND_DURATION_SECONDS_KEY]:30,[PROTECT_PLAYER_FROM_ALERT_STOPS_KEY]:false,uiLanguage:'auto',[GLOBAL_PROFILE_KEY]:'normal',[SITE_SETTINGS_KEY]:{},[APPEARANCE_KEY]:{fontFamily:'system',fontSize:14,backgroundColor:'#0d0d0f',accentColor:'#ffd42a',badgeBuiltinColor:'#38b35d',badgeDedicatedColor:'#ffbe24',badgeGenericColor:'#5591eb',badgeStrength:22},[LOG_KEY]:[]});
   await transientStore.set({[WATCH_REGISTRY_KEY]:{}});
   audioPlaying=false;activeAudioOwnerTabId=null;activeAudioReason=null;
   await appendLog('background','info','DoneBell settings reset to defaults',{version:chrome.runtime.getManifest().version});
@@ -414,6 +630,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
 
+  if (message?.type === 'emergency-stop-all') { emergencyStopAll(message.reason || 'popup-emergency-stop').then(sendResponse).catch(error=>sendResponse({ok:false,error:String(error)})); return true; }
   if (message?.type === 'reset-all-settings') { resetAllSettings().then(sendResponse).catch(error=>sendResponse({ok:false,error:String(error)})); return true; }
 
   if (message?.type === 'sync-auto-watch-site' && message.siteId) { syncAutoWatchSite(message.siteId,{injectOpenTabs:Boolean(message.injectOpenTabs)}).then(sendResponse).catch(error=>sendResponse({ok:false,error:String(error)})); return true; }
@@ -509,6 +726,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'task-complete') {
     (async () => {
+      const completionEpoch = emergencyStopEpoch;
+      const completionSerial = Math.max(0, Number(message.generationSerial) || 0);
+      const watcherInstance = typeof message.watcherInstance === 'string' ? message.watcherInstance : null;
+      const previousCompletion = completionDedupeByTab.get(tab.id);
+      const now = Date.now();
+      const duplicate = Boolean(previousCompletion && (
+        (completionSerial > 0 && watcherInstance && previousCompletion.instance === watcherInstance && previousCompletion.serial === completionSerial && previousCompletion.mode === message.mode) ||
+        ((!watcherInstance || completionSerial === 0) && previousCompletion.mode === message.mode && now - previousCompletion.at < 5000)
+      ));
+      if (duplicate) {
+        await appendLog('background','info','Duplicate completion ignored',{tabId:tab.id,mode:message.mode,generationSerial:completionSerial});
+        return;
+      }
+      completionDedupeByTab.set(tab.id,{serial:completionSerial,instance:watcherInstance,mode:message.mode,at:now});
       if (message.site?.id === 'gemini') geminiBusySince.delete(tab.id);
       const settings = await getEffectiveSettings(message.site?.id || null);
       await appendLog('background', 'info', 'Task complete received', {
@@ -543,19 +774,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      const soundShouldPlay = Boolean(settings.soundEnabled);
+      const preserveAudioData = await chrome.storage.local.get(PRESERVE_CURRENT_TRACK_KEY);
+      const preserveCurrentTrack = Boolean(preserveAudioData[PRESERVE_CURRENT_TRACK_KEY]);
+      const liveAudioState = typeof dbOffscreenAudioState0529 === 'function' ? await dbOffscreenAudioState0529() : null;
+      const audioIsActuallyPlaying = Boolean(audioPlaying || audioStartReservation || liveAudioState?.playing);
+      const audioMutedForRoute = typeof dbAudioMutedForTab0529 === 'function' ? await dbAudioMutedForTab0529(tab.id) : false;
+      const silentBecauseAlreadyVisible = Boolean(settings.silentWhenActive && message.wasVisible);
+      const soundShouldPlay = Boolean(settings.soundEnabled && !audioMutedForRoute && !silentBecauseAlreadyVisible && !(preserveCurrentTrack && audioIsActuallyPlaying));
+      if (settings.soundEnabled && !soundShouldPlay) {
+        await appendLog('background','info','Completion sound suppressed',{
+          tabId:tab.id,
+          preserveCurrentTrack:Boolean(preserveCurrentTrack && audioIsActuallyPlaying),
+          liveAudioReason:liveAudioState?.reason||null,
+          routeMuted:audioMutedForRoute,
+          silentBecauseAlreadyVisible
+        });
+      }
+
+      if (completionEpoch !== emergencyStopEpoch) {
+        await appendLog('background', 'info', 'Completion alert cancelled by emergency stop before UI delivery', { tabId: tab.id });
+        return;
+      }
 
       await sendToTab(tab.id, {
         type: 'show-completion-ui', settings, soundPlaying: soundShouldPlay, autoFocusedByDoneBell: autoFocusedNow
       }, 'Could not show in-page completion UI');
 
       const actions = [];
-      if (soundShouldPlay) actions.push(playSound('completion', tab.id, settings));
+      if (soundShouldPlay) actions.push((async()=>{
+        if (completionEpoch !== emergencyStopEpoch) return false;
+        return playSound('completion', tab.id, settings, completionEpoch);
+      })());
       // If DoneBell itself has just brought the completed tab to the front,
       // the in-page completion control is already visible. Avoid showing a
       // second system popup on top of it.
       if (settings.showNotification && !autoFocusedNow) {
-        actions.push(createDoneNotification(tab, message.site, message.title));
+        actions.push((async()=>{
+          if (completionEpoch !== emergencyStopEpoch) return null;
+          return createDoneNotification(tab, message.site, message.title, completionEpoch);
+        })());
       } else if (settings.showNotification && autoFocusedNow) {
         await appendLog('background', 'info', 'System notification suppressed because DoneBell auto-focused the completed tab', { tabId: tab.id });
       }
