@@ -406,29 +406,61 @@
 
   function findChatGPTStopControl() {
     if (state.site?.id !== 'chatgpt') return null;
-    // ChatGPT-specific rule: only trust a Stop control in the composer area.
-    // The old generic whole-page scan could match unrelated visible controls
-    // (for example voice/audio/share controls) after the answer had finished.
-    const root = composerRoot();
-    if (!root) return null;
 
-    for (const selector of CHATGPT_STOP_SELECTORS) {
+    // v0.5.37 hotfix: ChatGPT can move the generation Stop control outside the
+    // DOM ancestor previously inferred from the visible composer input. Trust the
+    // exact ChatGPT test id globally first; it is substantially safer than a
+    // whole-page text/aria scan and survives composer wrapper changes.
+    const exactGlobalSelectors = [
+      'button[data-testid="stop-button"]',
+      '[role="button"][data-testid="stop-button"]',
+      '[data-testid="stop-button"]'
+    ];
+    for (const selector of exactGlobalSelectors) {
       try {
-        for (const el of root.querySelectorAll(selector)) {
-          if (isVisible(el)) return el;
+        for (const el of document.querySelectorAll(selector)) {
+          if (!isVisible(el)) continue;
+          return el.closest?.('button,[role="button"]') || el;
         }
       } catch {}
     }
 
-    let controls = [];
-    try { controls = root.querySelectorAll('button,[role="button"]'); } catch {}
-    for (const el of controls) {
-      if (!isVisible(el)) continue;
-      const label = labelOf(el);
-      if (!label || label.length > 180) continue;
-      if (CHATGPT_NON_GENERATION_STOP_RE.test(label)) continue;
-      if (STOP_TEXT_RE.test(label) && CHATGPT_STOP_CONTEXT_RE.test(label)) return el;
+    // Newer ChatGPT layouts expose a stable composer form marker even when the
+    // editable input is nested differently. Search those roots before falling
+    // back to the legacy inferred composerRoot().
+    const roots = [];
+    const seenRoots = new Set();
+    const addRoot = (root) => {
+      if (!root || seenRoots.has(root)) return;
+      seenRoots.add(root);
+      roots.push(root);
+    };
+
+    try {
+      document.querySelectorAll('form[data-chatgpt-composer]').forEach(addRoot);
+    } catch {}
+    addRoot(composerRoot());
+
+    for (const root of roots) {
+      for (const selector of CHATGPT_STOP_SELECTORS) {
+        try {
+          for (const el of root.querySelectorAll(selector)) {
+            if (isVisible(el)) return el;
+          }
+        } catch {}
+      }
+
+      let controls = [];
+      try { controls = root.querySelectorAll('button,[role="button"]'); } catch {}
+      for (const el of controls) {
+        if (!isVisible(el)) continue;
+        const label = labelOf(el);
+        if (!label || label.length > 180) continue;
+        if (CHATGPT_NON_GENERATION_STOP_RE.test(label)) continue;
+        if (STOP_TEXT_RE.test(label) && CHATGPT_STOP_CONTEXT_RE.test(label)) return el;
+      }
     }
+
     return null;
   }
 
